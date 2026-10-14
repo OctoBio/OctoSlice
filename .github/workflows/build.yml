@@ -1,0 +1,81 @@
+name: Build OctoSlice
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows (VST3 + Standalone)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache JUCE download
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: juce-8.0.15-${{ runner.os }}
+
+      - name: Configure
+        run: cmake -B build -A x64 -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --target OctoSlice_VST3 OctoSlice_Standalone --parallel
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item -Recurse "build/OctoSlice_artefacts/Release/VST3/OctoSlice.vst3" dist/
+          Copy-Item "build/OctoSlice_artefacts/Release/Standalone/OctoSlice.exe" dist/
+          Copy-Item README.md dist/
+          Compress-Archive -Path dist/* -DestinationPath OctoSlice-Windows-x64.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OctoSlice-Windows-x64
+          path: OctoSlice-Windows-x64.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: OctoSlice-Windows-x64.zip
+          generate_release_notes: true
+
+  linux-tests:
+    name: Linux (build + offline tests + pluginval)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libxcomposite-dev libfreetype-dev libfontconfig1-dev libgl1-mesa-dev xvfb
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DOCTOSLICE_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --target OctoSlice_VST3 OctoSliceTests --parallel
+
+      - name: Offline tests
+        run: xvfb-run -a build/OctoSliceTests_artefacts/Release/OctoSliceTests /tmp
+
+      - name: pluginval
+        run: |
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Linux.zip
+          unzip -q pluginval.zip
+          xvfb-run -a ./pluginval --strictness-level 7 --validate-in-process build/OctoSlice_artefacts/Release/VST3/OctoSlice.vst3
