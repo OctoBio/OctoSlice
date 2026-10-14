@@ -8,6 +8,8 @@
 #include <atomic>
 #include <memory>
 #include <vector>
+#include <limits>
+#include <algorithm>
 #include "SliceDetector.h"
 
 namespace octo
@@ -31,8 +33,17 @@ namespace octo
         int sliceStart (int i) const noexcept { return points[(size_t) i]; }
         int sliceEnd (int i) const noexcept
         {
-            return (size_t) i + 1 < points.size() ? points[(size_t) i + 1] : totalSamples();
+            return (size_t) i + 1 < points.size() ? points[(size_t) i + 1] : regionEnd();
         }
+
+        // playable region (start/end trim). trimEnd == 0 means "until the end of the sample"
+        int trimStart = 0, trimEnd = 0;
+        int regionStart() const noexcept { return sample ? juce::jlimit (0, totalSamples(), trimStart) : 0; }
+        int regionEnd() const noexcept
+        {
+            return sample ? (trimEnd > 0 ? juce::jlimit (regionStart(), totalSamples(), trimEnd) : totalSamples()) : 0;
+        }
+        bool isTrimmed() const noexcept { return sample && (regionStart() > 0 || regionEnd() < totalSamples()); }
     };
 
     enum class SliceMode { grid = 0, transient, manual };
@@ -95,7 +106,13 @@ public:
     octo::SliceMode getMode() const;
     void addMarker (int samplePos);
     void moveMarker (int index, int samplePos);
+    /** Moves the selected markers together by delta (computed from 'base', the points when the drag started). */
+    void moveMarkers (const std::vector<int>& base, const std::vector<int>& selection, int delta);
     void removeMarker (int index);
+    void removeMarkers (std::vector<int> indices);
+    void setTrim (int start, int end, bool final);
+    void autoTrim();
+    void resetTrim();
     void resetToGrid();
     void clearMarkers();
     juce::File createMidiFile();
@@ -126,11 +143,13 @@ private:
     void stopNote (int note);
     void renderVoices (juce::AudioBuffer<float>& out, int start, int num, const octo::Snapshot& snap);
     void setModeParam (octo::SliceMode m);
+    void commitManual (std::vector<int> pts);
 
     std::shared_ptr<const octo::Snapshot> current, audioSnap;
     mutable juce::SpinLock snapshotLock;
     std::vector<std::shared_ptr<const octo::Snapshot>> graveyard;
     std::vector<int> manualPoints;
+    int trimS = 0, trimE = 0;
 
     std::atomic<bool> needsReslice { false };
     double lastBpmUsed = 0.0;

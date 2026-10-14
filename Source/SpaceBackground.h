@@ -22,7 +22,9 @@ namespace octo
         SpaceBackground();
 
         void tick (float dt, const Drive& d);
-        void draw (juce::Graphics& g, juce::Rectangle<float> area) const;
+        /** Slow layers (sky, nebulae, planet) are cached at half resolution and refreshed a few times per
+            second; stars and particles are drawn live every frame. */
+        void draw (juce::Graphics& g, juce::Rectangle<float> area);
 
         void burst (juce::Point<float> where, juce::Colour colour, float strength = 1.0f);
         void kick (float amount) { warpImpulse = juce::jmin (3.0f, warpImpulse + amount); }
@@ -33,6 +35,7 @@ namespace octo
         struct Ring { juce::Point<float> p; float age, maxAge; juce::Colour c; };
 
         void respawn (Star& s, bool far);
+        void drawSlowLayers (juce::Graphics& g, juce::Rectangle<float> area) const;
 
         std::vector<Star> stars;
         std::vector<Particle> particles;
@@ -41,5 +44,7 @@ namespace octo
         float time = 0.0f, warpImpulse = 0.0f, speed = 0.0f;
         float smoothedLevel = 0.0f;
         Drive drive;
+        juce::Image slowLayer;
+        int frameCounter = 0;
     };
 }

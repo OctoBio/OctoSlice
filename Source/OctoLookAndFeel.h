@@ -34,6 +34,9 @@ namespace octo
         void drawToggleButton (juce::Graphics&, juce::ToggleButton&, bool highlighted, bool down) override;
         void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour&, bool highlighted, bool down) override;
         void drawButtonText (juce::Graphics&, juce::TextButton&, bool highlighted, bool down) override;
-        juce::Font getTextButtonFont (juce::TextButton&, int) override { return uiFont (12.0f, true, 0.18f); }
+        juce::Font getTextButtonFont (juce::TextButton& b, int) override
+        {
+            return b.getButtonText().length() == 1 ? uiFont (17.0f, true, 0.0f) : uiFont (12.0f, true, 0.18f);
+        }
     };
 }

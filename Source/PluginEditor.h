@@ -24,7 +24,7 @@ namespace octo
     };
 
     /** Segmented selector bound to a choice parameter. */
-    class ChoiceSelector : public juce::Component
+    class ChoiceSelector : public juce::Component, private juce::Timer
     {
     public:
         ChoiceSelector (juce::AudioProcessorValueTreeState&, const juce::String& paramId);
@@ -42,6 +42,7 @@ namespace octo
         int index = 0, hover = -1;
         float animIndex = 0.0f;
         int segmentAt (int x) const;
+        void timerCallback() override;
     };
 
     /** Drag this onto a DAW track to get one MIDI note per slice. */
@@ -54,6 +55,7 @@ namespace octo
         void mouseExit (const juce::MouseEvent&) override { repaint(); }
         void mouseDrag (const juce::MouseEvent&) override;
         void mouseUp (const juce::MouseEvent&) override { dragging = false; }
+        void refresh() { repaint(); }
 
     private:
         OctoSliceProcessor& proc;
@@ -78,12 +80,15 @@ public:
 
     /** Advances all animations (also used by the offline renderer). */
     void advanceFrame (float dt);
+    double getAveragePaintMs() const { return frameMsAverage; }
+    WaveformView& getWaveform() { return waveform; }
 
 private:
     void openFileChooser();
     void updateVisibility();
     void drawLogo (juce::Graphics&, juce::Rectangle<float>);
     void drawSection (juce::Graphics&, juce::Rectangle<int>, const juce::String& title);
+    void renderChrome (juce::Graphics&);
 
     OctoSliceProcessor& proc;
     octo::OctoLookAndFeel lnf;
@@ -108,6 +113,12 @@ private:
     float time = 0.0f;
     bool dragHover = false;
     std::array<juce::uint32, octo::maxSlices> lastTrig {};
+
+    // static parts of the UI (panels, labels, header text) cached in an image
+    juce::Image chromeImage;
+    juce::String chromeKey;
+    juce::uint32 lastSnapshotVersion = 0xffffffff;
+    double frameMsAverage = 0.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OctoSliceEditor)
 };

@@ -13,6 +13,9 @@ Glisse un sample, découpe-le (grille, transitoires ou à la main), puis rejoue 
 - **Transient** : détection automatique des attaques (spectral flux + énergie), réglages *Sensitivity* et *Min length*.
 - **Manual** : double-clic sur la forme d'onde pour ajouter une découpe, glisser un marqueur pour le déplacer, clic droit (ou Alt-clic) pour le supprimer. Toucher un marqueur en mode Grid/Transient bascule automatiquement en Manual en gardant les découpes existantes.
 - **Zero-X** : cale les découpes sur le passage par zéro le plus proche (pas de clics).
+- **Sélection multiple** : glisse sur une zone vide pour sélectionner plusieurs marqueurs au lasso (ou Shift-clic), puis déplace-les tous ensemble, aux flèches ou à la souris. Suppr / clic droit pour les effacer d'un coup.
+- **Trim début/fin** : déplace les crochets roses START / END pour couper les silences, ou clique **AUTO TRIM** (détection automatique). Les découpes et l'export MIDI se font dans la zone gardée.
+- **Zoom précis** : molette, boutons − / + / FIT, barre de navigation en haut (glisser pour se déplacer). Zoom jusqu'à l'échantillon près, avec affichage de la position en ms pendant le déplacement.
 
 **Jeu**
 - Une découpe par touche, à partir de la note **ROOT** (C3 par défaut — convention Bitwig/FL), jusqu'à 128 découpes.
@@ -56,9 +59,12 @@ Validé avec [pluginval](https://github.com/Tracktion/pluginval) au niveau de ri
 | Charger un sample | glisser-déposer n'importe où, ou bouton LOAD |
 | Écouter une découpe | clic |
 | Ajouter une découpe | double-clic |
-| Déplacer | glisser le marqueur |
-| Supprimer | clic droit / Alt-clic sur le marqueur |
-| Zoom / défilement | molette / Maj + molette |
+| Sélectionner plusieurs marqueurs | glisser sur une zone vide (lasso), Shift-clic, Ctrl+A |
+| Déplacer la sélection | glisser un marqueur sélectionné, ou flèches (Shift = plus grand pas) |
+| Supprimer | Suppr / clic droit / Alt-clic |
+| Couper début / fin | crochets START / END, ou AUTO TRIM |
+| Zoom | molette, − / + / FIT, touches + − 0 |
+| Défilement | barre de navigation en haut, Maj + molette |
 
 ## Licence
 

@@ -370,7 +370,12 @@ void OctoSliceProcessor::publish (std::vector<int> points)
     auto snap = std::make_shared<Snapshot>();
     snap->sample = old->sample;
     if (snap->sample)
-        sanitise (points, snap->sample->audio.getNumSamples());
+    {
+        const int total = snap->sample->audio.getNumSamples();
+        snap->trimStart = juce::jlimit (0, total, trimS);
+        snap->trimEnd = trimE > 0 ? juce::jlimit (snap->trimStart, total, trimE) : 0;
+        sanitise (points, snap->regionStart(), snap->regionEnd());
+    }
     else
         points.clear();
     snap->points = std::move (points);
@@ -389,6 +394,8 @@ void OctoSliceProcessor::reslice()
     if (snap->sample == nullptr) return;
     const auto& s = *snap->sample;
     const int total = s.audio.getNumSamples();
+    const int rs = juce::jlimit (0, total, trimS);
+    const int re = trimE > 0 ? juce::jlimit (rs, total, trimE) : total;
 
     std::vector<int> pts;
     switch (getMode())
@@ -400,21 +407,26 @@ void OctoSliceProcessor::reslice()
             if (bars < 0.25)
             {
                 lastBpmUsed = hostBpm.load();
-                const double raw = (total / s.sampleRate) * lastBpmUsed / 240.0;
+                const double raw = ((re - rs) / s.sampleRate) * lastBpmUsed / 240.0;
                 bars = 0.5;
                 for (double b : { 1.0, 2.0, 4.0, 8.0 })
                     if (std::abs (std::log2 (raw / b)) < std::abs (std::log2 (raw / bars))) bars = b;
             }
             const int div = 1 << (juce::jlimit (0, 5, (int) pDivision->load()) + 1);
-            pts = gridSlices (total, juce::jmax (1, (int) std::lround (div * bars)));
+            pts = gridSlices (rs, re, juce::jmax (1, (int) std::lround (div * bars)));
             break;
         }
         case SliceMode::transient:
-            pts = transientSlices (s.audio, s.sampleRate, pSens->load() / 100.0f,
+        {
+            juce::AudioBuffer<float> region (const_cast<float* const*> (s.audio.getArrayOfReadPointers()),
+                                             s.audio.getNumChannels(), rs, re - rs);
+            pts = transientSlices (region, s.sampleRate, pSens->load() / 100.0f,
                                    (int) (pMinLen->load() / 1000.0f * s.sampleRate));
+            for (auto& p : pts) p += rs;
             break;
+        }
         case SliceMode::manual:
-            pts = manualPoints.empty() ? std::vector<int> { 0 } : manualPoints;
+            pts = manualPoints;
             break;
     }
 
@@ -434,47 +446,138 @@ void OctoSliceProcessor::setModeParam (SliceMode m)
     }
 }
 
+void OctoSliceProcessor::commitManual (std::vector<int> pts)
+{
+    auto snap = getSnapshot();
+    sanitise (pts, snap->regionStart(), snap->regionEnd());
+    manualPoints = pts;
+    if (getMode() != SliceMode::manual)
+        setModeParam (SliceMode::manual);
+    publish (std::move (pts));
+}
+
 void OctoSliceProcessor::addMarker (int samplePos)
 {
     auto snap = getSnapshot();
     if (snap->sample == nullptr || snap->numSlices() >= maxSlices) return;
-    if (getMode() != SliceMode::manual) manualPoints = snap->points;
-    manualPoints.push_back (samplePos);
-    sanitise (manualPoints, snap->totalSamples());
-    setModeParam (SliceMode::manual);
-    publish (manualPoints);
+    auto pts = snap->points;
+    pts.push_back (samplePos);
+    commitManual (std::move (pts));
+}
+
+void OctoSliceProcessor::moveMarkers (const std::vector<int>& base, const std::vector<int>& selection, int delta)
+{
+    auto snap = getSnapshot();
+    if (snap->sample == nullptr || base.size() < 2) return;
+    const int n = (int) base.size();
+    const int re = snap->regionEnd();
+    std::vector<bool> sel ((size_t) n, false);
+    for (int i : selection)
+        if (i >= 1 && i < n) sel[(size_t) i] = true;
+
+    constexpr int gap = 64;
+    int lo = std::numeric_limits<int>::min() / 2, hi = std::numeric_limits<int>::max() / 2;
+    bool any = false;
+    for (int i = 1; i < n; ++i)
+    {
+        if (! sel[(size_t) i]) continue;
+        any = true;
+        if (! sel[(size_t) i - 1])
+            lo = juce::jmax (lo, base[(size_t) i - 1] + gap - base[(size_t) i]);
+        if (i + 1 >= n)
+            hi = juce::jmin (hi, re - gap - base[(size_t) i]);
+        else if (! sel[(size_t) i + 1])
+            hi = juce::jmin (hi, base[(size_t) i + 1] - gap - base[(size_t) i]);
+    }
+    if (! any || lo > hi) return;
+    delta = juce::jlimit (lo, hi, delta);
+
+    auto pts = base;
+    for (int i = 1; i < n; ++i)
+        if (sel[(size_t) i]) pts[(size_t) i] += delta;
+    commitManual (std::move (pts));
 }
 
 void OctoSliceProcessor::moveMarker (int index, int samplePos)
 {
     auto snap = getSnapshot();
     if (snap->sample == nullptr || index <= 0 || index >= snap->numSlices()) return;
-    if (getMode() != SliceMode::manual) { manualPoints = snap->points; setModeParam (SliceMode::manual); }
-    if (index >= (int) manualPoints.size()) return;
+    moveMarkers (snap->points, { index }, samplePos - snap->points[(size_t) index]);
+}
 
-    const int lo = manualPoints[(size_t) index - 1] + 64;
-    const int hi = ((size_t) index + 1 < manualPoints.size() ? manualPoints[(size_t) index + 1] : snap->totalSamples()) - 64;
-    if (hi <= lo) return;
-    manualPoints[(size_t) index] = juce::jlimit (lo, hi, samplePos);
-    publish (manualPoints);
+void OctoSliceProcessor::removeMarkers (std::vector<int> indices)
+{
+    auto snap = getSnapshot();
+    if (snap->sample == nullptr) return;
+    auto pts = snap->points;
+    std::sort (indices.begin(), indices.end(), std::greater<int>());
+    indices.erase (std::unique (indices.begin(), indices.end()), indices.end());
+    for (int i : indices)
+        if (i >= 1 && i < (int) pts.size())
+            pts.erase (pts.begin() + i);
+    commitManual (std::move (pts));
 }
 
 void OctoSliceProcessor::removeMarker (int index)
 {
-    auto snap = getSnapshot();
-    if (snap->sample == nullptr || index <= 0 || index >= snap->numSlices()) return;
-    if (getMode() != SliceMode::manual) manualPoints = snap->points;
-    if (index < (int) manualPoints.size())
-        manualPoints.erase (manualPoints.begin() + index);
-    setModeParam (SliceMode::manual);
-    publish (manualPoints);
+    removeMarkers ({ index });
 }
 
 void OctoSliceProcessor::clearMarkers()
 {
-    manualPoints = { 0 };
-    setModeParam (SliceMode::manual);
-    publish (manualPoints);
+    auto snap = getSnapshot();
+    commitManual ({ snap->regionStart() });
+}
+
+//==============================================================================
+void OctoSliceProcessor::setTrim (int start, int end, bool final)
+{
+    auto snap = getSnapshot();
+    if (snap->sample == nullptr) return;
+    const int total = snap->totalSamples();
+    const int minLen = juce::jmin (total, juce::jmax (256, (int) (snap->sample->sampleRate * 0.02)));
+    start = juce::jlimit (0, total - minLen, start);
+    end = juce::jlimit (start + minLen, total, end);
+
+    const int oldStart = snap->regionStart();
+    trimS = start;
+    trimE = end >= total ? 0 : end;
+
+    // the old region start was an implicit slice point: don't leave it behind as a marker
+    auto dropOld = [oldStart, start] (std::vector<int>& v)
+    {
+        if (oldStart != start)
+            v.erase (std::remove (v.begin(), v.end(), oldStart), v.end());
+    };
+
+    if (getMode() == SliceMode::manual)
+    {
+        dropOld (manualPoints);
+        publish (manualPoints);
+    }
+    else if (getMode() == SliceMode::transient && ! final)
+    {
+        auto pts = snap->points;
+        dropOld (pts);
+        publish (std::move (pts));
+    }
+    else
+        reslice();
+}
+
+void OctoSliceProcessor::autoTrim()
+{
+    auto snap = getSnapshot();
+    if (snap->sample == nullptr) return;
+    const auto b = detectSoundBounds (snap->sample->audio, snap->sample->sampleRate);
+    setTrim (b.first, b.second, true);
+}
+
+void OctoSliceProcessor::resetTrim()
+{
+    auto snap = getSnapshot();
+    if (snap->sample == nullptr) return;
+    setTrim (0, snap->totalSamples(), true);
 }
 
 void OctoSliceProcessor::resetToGrid()
@@ -519,6 +622,7 @@ void OctoSliceProcessor::loadAudio (juce::AudioBuffer<float> audio, double sampl
     ++snapshotVersion;
 
     manualPoints.clear();
+    trimS = trimE = 0;
     if (getMode() == SliceMode::manual)
         setModeParam (SliceMode::transient);
     needsReslice = false;
@@ -533,7 +637,8 @@ juce::File OctoSliceProcessor::createMidiFile()
 
     const double bpm = juce::jlimit (20.0, 400.0, hostBpm.load());
     constexpr int ppq = 960;
-    auto toTicks = [&] (int samplePos) { return samplePos / snap->sample->sampleRate * (bpm / 60.0) * ppq; };
+    const int origin = snap->regionStart();
+    auto toTicks = [&] (int samplePos) { return (samplePos - origin) / snap->sample->sampleRate * (bpm / 60.0) * ppq; };
 
     juce::MidiMessageSequence seq;
     seq.addEvent (juce::MidiMessage::tempoMetaEvent ((int) std::lround (60000000.0 / bpm)), 0.0);
@@ -581,6 +686,8 @@ void OctoSliceProcessor::getStateInformation (juce::MemoryBlock& destData)
         juce::StringArray pts;
         for (int p : manualPoints) pts.add (juce::String (p));
         st.setProperty ("manual", pts.joinIntoString (","), nullptr);
+        st.setProperty ("trimStart", trimS, nullptr);
+        st.setProperty ("trimEnd", trimE, nullptr);
 
         if (s.audio.getNumSamples() <= s.sampleRate * maxEmbedSeconds)
         {
@@ -651,6 +758,8 @@ void OctoSliceProcessor::setStateInformation (const void* data, int sizeInBytes)
         manualPoints.clear();
         for (auto& t : juce::StringArray::fromTokens (st.getProperty ("manual").toString(), ",", ""))
             if (t.isNotEmpty()) manualPoints.push_back (t.getIntValue());
+        trimS = (int) st.getProperty ("trimStart", 0);
+        trimE = (int) st.getProperty ("trimEnd", 0);
         needsReslice = false;
         reslice();
     }

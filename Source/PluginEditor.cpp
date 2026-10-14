@@ -21,6 +21,7 @@ Knob::Knob (juce::AudioProcessorValueTreeState& state, const juce::String& id, c
     slider.setVelocityBasedMode (false);
     slider.setMouseDragSensitivity (220);
     slider.onValueChange = [this] { repaint(); };
+    slider.setRepaintsOnMouseActivity (true);
     addAndMakeVisible (slider);
     attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (state, id, slider);
     slider.setDoubleClickReturnValue (true, state.getParameter (id)->convertFrom0to1 (state.getParameter (id)->getDefaultValue()));
@@ -45,7 +46,7 @@ void Knob::paint (juce::Graphics& g)
 
 //==============================================================================
 ChoiceSelector::ChoiceSelector (juce::AudioProcessorValueTreeState& state, const juce::String& id)
-    : attachment (*state.getParameter (id), [this] (float v) { index = (int) std::lround (v); repaint(); }),
+    : attachment (*state.getParameter (id), [this] (float v) { index = (int) std::lround (v); startTimerHz (60); repaint(); }),
       param (*state.getParameter (id))
 {
     if (auto* c = dynamic_cast<juce::AudioParameterChoice*> (&param))
@@ -72,6 +73,17 @@ void ChoiceSelector::mouseMove (const juce::MouseEvent& e)
     if (s != hover) { hover = s; repaint(); }
 }
 
+void ChoiceSelector::timerCallback()
+{
+    animIndex += ((float) index - animIndex) * 0.3f;
+    if (std::abs (animIndex - (float) index) < 0.003f)
+    {
+        animIndex = (float) index;
+        stopTimer();
+    }
+    repaint();
+}
+
 void ChoiceSelector::paint (juce::Graphics& g)
 {
     auto r = getLocalBounds().toFloat().reduced (0.5f);
@@ -83,8 +95,6 @@ void ChoiceSelector::paint (juce::Graphics& g)
 
     const int n = juce::jmax (1, options.size());
     const float segW = r.getWidth() / (float) n;
-    animIndex += ((float) index - animIndex) * 0.35f;
-    if (std::abs (animIndex - (float) index) < 0.002f) animIndex = (float) index;
 
     auto pill = juce::Rectangle<float> (r.getX() + animIndex * segW, r.getY(), segW, r.getHeight()).reduced (2.0f);
     g.setColour (colours::cyan.withAlpha (0.12f));
@@ -190,7 +200,16 @@ OctoSliceEditor::OctoSliceEditor (OctoSliceProcessor& p)
     clearButton.onClick = [this] { proc.clearMarkers(); };
     gridButton.onClick  = [this] { proc.resetToGrid(); };
 
-    setSize (1000, 660);
+    for (juce::Component* c : { (juce::Component*) &loadButton, (juce::Component*) &midiButton, (juce::Component*) &modeSel,
+                                (juce::Component*) &divSel, (juce::Component*) &barsSel, (juce::Component*) &playModeSel,
+                                (juce::Component*) &zeroX, (juce::Component*) &choke, (juce::Component*) &reverse,
+                                (juce::Component*) &sens, (juce::Component*) &minLen, (juce::Component*) &root,
+                                (juce::Component*) &attack, (juce::Component*) &release, (juce::Component*) &pitch,
+                                (juce::Component*) &tone, (juce::Component*) &spaceKnob, (juce::Component*) &gain,
+                                (juce::Component*) &clearButton, (juce::Component*) &gridButton })
+        c->setBufferedToImage (true);   // controls only redraw when they change, not every animation frame
+
+    setSize (1000, 688);
 
     lastFrameTime = juce::Time::getMillisecondCounterHiRes();
     vblank = std::make_unique<juce::VBlankAttachment> (this, [this]
@@ -237,6 +256,12 @@ void OctoSliceEditor::advanceFrame (float dt)
     d.reverse = proc.apvts.getRawParameterValue ("reverse")->load() > 0.5f;
     d.numSlices = n;
     space.tick (dt, d);
+
+    if (proc.snapshotVersion.load() != lastSnapshotVersion)
+    {
+        lastSnapshotVersion = proc.snapshotVersion.load();
+        midiButton.refresh();
+    }
 
     updateVisibility();
     repaint();
@@ -288,11 +313,12 @@ void OctoSliceEditor::resized()
     loadButton.setBounds (getWidth() - 24 - 86, 16, 86, 30);
     midiButton.setBounds (loadButton.getX() - 10 - 124, 16, 124, 30);
 
-    waveform.setBounds (24, 64, getWidth() - 48, 300);
+    waveform.setBounds (24, 64, getWidth() - 48, 330);
 
-    slicePanel = { 24, 404, 400, 232 };
-    playPanel  = { 436, 404, 196, 232 };
-    soundPanel = { 644, 404, getWidth() - 644 - 24, 232 };
+    const int py = waveform.getBottom() + 38;
+    slicePanel = { 24, py, 400, 232 };
+    playPanel  = { 436, py, 196, 232 };
+    soundPanel = { 644, py, getWidth() - 644 - 24, 232 };
 
     // SLICE
     {
@@ -381,14 +407,11 @@ void OctoSliceEditor::drawSection (juce::Graphics& g, juce::Rectangle<int> r, co
     g.drawText (title, t.withTrimmedLeft (14.0f), juce::Justification::centredLeft);
 }
 
-void OctoSliceEditor::paint (juce::Graphics& g)
+void OctoSliceEditor::renderChrome (juce::Graphics& g)
 {
-    space.draw (g, getLocalBounds().toFloat());
-
-    // --- header ---------------------------------------------------------------
-    drawLogo (g, { 26.0f, 12.0f, 260.0f, 38.0f });
-
     auto snap = proc.getSnapshot();
+
+    // --- header info ---------------------------------------------------------------
     auto info = juce::Rectangle<float> (300.0f, 14.0f, (float) midiButton.getX() - 316.0f, 34.0f);
     if (snap->sample)
     {
@@ -398,8 +421,9 @@ void OctoSliceEditor::paint (juce::Graphics& g)
         g.drawText (s.name, info.removeFromTop (18.0f), juce::Justification::centredRight, true);
         g.setFont (uiFont (10.5f, false, 0.12f));
         g.setColour (colours::textDim);
+        const double regionSec = (snap->regionEnd() - snap->regionStart()) / s.sampleRate;
         const juce::String details = juce::String (snap->numSlices()) + " SLICES   "
-                                   + juce::String (s.audio.getNumSamples() / s.sampleRate, 2) + " S   "
+                                   + juce::String (regionSec, 2) + " S" + (snap->isTrimmed() ? " (TRIMMED)   " : "   ")
                                    + juce::String (s.sampleRate / 1000.0, 1) + " KHZ   "
                                    + juce::String (proc.hostBpm.load(), 1) + " BPM";
         g.drawText (details, info, juce::Justification::centredRight, true);
@@ -413,11 +437,17 @@ void OctoSliceEditor::paint (juce::Graphics& g)
 
     // --- hint row --------------------------------------------------------------
     {
-        auto row = juce::Rectangle<float> (32.0f, 370.0f, (float) getWidth() - 64.0f, 24.0f);
+        auto row = juce::Rectangle<float> (32.0f, (float) waveform.getBottom() + 4.0f, (float) getWidth() - 64.0f, 24.0f);
         g.setFont (uiFont (10.5f, false, 0.12f));
-        g.setColour (colours::textDim);
         const int sel = waveform.getSelectedSlice();
-        if (snap->sample && sel >= 0 && sel < snap->numSlices())
+        const int numSel = waveform.getNumSelectedMarkers();
+        if (snap->sample && numSel > 0)
+        {
+            g.setColour (colours::cyan);
+            g.drawText (juce::String (numSel) + (numSel > 1 ? " MARKERS SELECTED" : " MARKER SELECTED") + "  -  DRAG / ARROWS: MOVE   DEL: DELETE",
+                        row, juce::Justification::centredLeft);
+        }
+        else if (snap->sample && sel >= 0 && sel < snap->numSlices())
         {
             const int note = (int) proc.apvts.getRawParameterValue ("root")->load() + sel;
             const double len = (snap->sliceEnd (sel) - snap->sliceStart (sel)) / snap->sample->sampleRate;
@@ -426,7 +456,8 @@ void OctoSliceEditor::paint (juce::Graphics& g)
                         + "  -  " + juce::String (len * 1000.0, 0) + " MS", row, juce::Justification::centredLeft);
         }
         g.setColour (colours::textFaint);
-        g.drawText (snap->sample ? "CLICK: PLAY   DOUBLE-CLICK: ADD   DRAG: MOVE   RIGHT-CLICK: DELETE   WHEEL: ZOOM"
+        if (numSel == 0)
+        g.drawText (snap->sample ? "CLICK: PLAY   DOUBLE-CLICK: ADD   DRAG EMPTY AREA: SELECT   SHIFT: ADD TO SELECTION   WHEEL: ZOOM"
                                  : "DRAG & DROP AUDIO ANYWHERE ON THE PLUGIN",
                     row, juce::Justification::centredRight);
     }
@@ -437,8 +468,6 @@ void OctoSliceEditor::paint (juce::Graphics& g)
     drawSection (g, soundPanel, "SOUND");
 
     const int mode = modeSel.getIndex();
-    g.setFont (uiFont (10.0f, true, 0.2f));
-    g.setColour (colours::textDim);
     if (mode != 2 && snap->sample)
     {
         const auto readout = juce::Rectangle<float> ((float) slicePanel.getX() + 18.0f, (float) slicePanel.getBottom() - 50.0f, 200.0f, 36.0f);
@@ -461,18 +490,47 @@ void OctoSliceEditor::paint (juce::Graphics& g)
     }
     else if (mode == 2)
     {
-        auto r = slicePanel.reduced (16).withTrimmedTop (22 + 30 + 14).removeFromTop (70).toFloat();
+        auto r = slicePanel.reduced (16).withTrimmedTop (22 + 30 + 14).removeFromTop (80).toFloat();
         g.setFont (uiFont (11.0f, false, 0.06f));
         g.setColour (colours::textDim);
-        g.drawFittedText ("Manual mode: double-click the waveform to add a slice,\n"
-                          "drag a marker to move it, right-click (or Alt-click) to delete.\n"
-                          "Each slice plays on its own key, starting from ROOT.",
+        g.drawFittedText ("Double-click: add a slice.  Drag on an empty area or\n"
+                          "Shift-click: select several markers, then drag them together.\n"
+                          "Del / right-click: delete.  Arrows: nudge the selection.",
                           r.toNearestInt(), juce::Justification::topLeft, 4);
     }
+}
+
+void OctoSliceEditor::paint (juce::Graphics& g)
+{
+    const double t0 = juce::Time::getMillisecondCounterHiRes();
+
+    space.draw (g, getLocalBounds().toFloat());
+    drawLogo (g, { 26.0f, 12.0f, 260.0f, 38.0f });
+
+    // the static chrome only changes when its content changes: render it once into an image
+    const float scale = juce::jlimit (1.0f, 4.0f, g.getInternalContext().getPhysicalPixelScaleFactor());
+    const juce::String key = juce::String (modeSel.getIndex()) + "|" + juce::String (proc.snapshotVersion.load())
+                           + "|" + juce::String (waveform.getSelectedSlice()) + "|" + juce::String (waveform.getNumSelectedMarkers())
+                           + "|" + juce::String ((int) std::lround (proc.hostBpm.load() * 10.0))
+                           + "|" + juce::String ((int) proc.apvts.getRawParameterValue ("root")->load())
+                           + "|" + juce::String (getWidth()) + "x" + juce::String (getHeight()) + "@" + juce::String (scale);
+    if (key != chromeKey || ! chromeImage.isValid())
+    {
+        chromeKey = key;
+        chromeImage = juce::Image (juce::Image::ARGB, juce::roundToInt ((float) getWidth() * scale),
+                                   juce::roundToInt ((float) getHeight() * scale), true);
+        juce::Graphics cg (chromeImage);
+        cg.addTransform (juce::AffineTransform::scale (scale));
+        renderChrome (cg);
+    }
+    g.drawImage (chromeImage, getLocalBounds().toFloat());
 
     if (dragHover)
     {
         g.setColour (colours::cyan.withAlpha (0.05f));
         g.fillAll();
     }
+
+    const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
+    frameMsAverage = frameMsAverage * 0.9 + ms * 0.1;
 }

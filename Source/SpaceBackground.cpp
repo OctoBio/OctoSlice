@@ -56,7 +56,7 @@ namespace octo
     void SpaceBackground::burst (juce::Point<float> where, juce::Colour colour, float strength)
     {
         const int n = (int) (14 + 18 * strength);
-        for (int i = 0; i < n && particles.size() < 600; ++i)
+        for (int i = 0; i < n && particles.size() < 350; ++i)
         {
             const float a = rng.nextFloat() * juce::MathConstants<float>::twoPi;
             const float sp = (40.0f + rng.nextFloat() * 180.0f) * (0.6f + 0.6f * strength);
@@ -72,7 +72,7 @@ namespace octo
             rings.push_back ({ where, 0.0f, 0.9f + 0.4f * strength, colour });
     }
 
-    void SpaceBackground::draw (juce::Graphics& g, juce::Rectangle<float> area) const
+    void SpaceBackground::drawSlowLayers (juce::Graphics& g, juce::Rectangle<float> area) const
     {
         const auto centre = juce::Point<float> (area.getCentreX(), area.getY() + area.getHeight() * 0.38f);
 
@@ -119,6 +119,24 @@ namespace octo
                 g.drawEllipse (pc.x - pr, pc.y - pr, pr * 2.0f, pr * 2.0f, 1.5f + (float) i * 3.0f);
             }
         }
+    }
+
+    void SpaceBackground::draw (juce::Graphics& g, juce::Rectangle<float> area)
+    {
+        const auto centre = juce::Point<float> (area.getCentreX(), area.getY() + area.getHeight() * 0.38f);
+        // slow layers: half resolution, refreshed every 3rd frame (they move slowly and are blurry anyway)
+        const int lw = juce::jmax (1, (int) (area.getWidth() * 0.5f)), lh = juce::jmax (1, (int) (area.getHeight() * 0.5f));
+        if (slowLayer.getWidth() != lw || slowLayer.getHeight() != lh || (frameCounter++ % 3) == 0)
+        {
+            if (slowLayer.getWidth() != lw || slowLayer.getHeight() != lh)
+                slowLayer = juce::Image (juce::Image::RGB, lw, lh, false);
+            juce::Graphics lg (slowLayer);
+            lg.addTransform (juce::AffineTransform::scale (0.5f));
+            drawSlowLayers (lg, area.withZeroOrigin());
+        }
+        g.setImageResamplingQuality (juce::Graphics::lowResamplingQuality);
+        g.drawImage (slowLayer, area);
+        g.setImageResamplingQuality (juce::Graphics::mediumResamplingQuality);
 
         // --- stars ----------------------------------------------------------------
         const float f = area.getWidth() * 0.5f;
@@ -146,7 +164,8 @@ namespace octo
             {
                 const float sz = 0.6f + depth * 2.4f;
                 g.setColour (col.withAlpha (alpha));
-                g.fillEllipse (p.x - sz * 0.5f, p.y - sz * 0.5f, sz, sz);
+                if (sz < 1.8f) g.fillRect (p.x - sz * 0.5f, p.y - sz * 0.5f, sz, sz);   // tiny stars: a rect is much cheaper
+                else           g.fillEllipse (p.x - sz * 0.5f, p.y - sz * 0.5f, sz, sz);
             }
         }
 

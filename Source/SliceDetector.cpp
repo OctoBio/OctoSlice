@@ -5,13 +5,42 @@
 
 namespace octo
 {
-    std::vector<int> gridSlices (int totalSamples, int numSlices)
+    std::vector<int> gridSlices (int start, int end, int numSlices)
     {
         std::vector<int> pts;
         numSlices = juce::jlimit (1, maxSlices, numSlices);
+        const double len = (double) juce::jmax (1, end - start);
         for (int i = 0; i < numSlices; ++i)
-            pts.push_back ((int) std::llround ((double) totalSamples * i / numSlices));
+            pts.push_back (start + (int) std::llround (len * i / numSlices));
         return pts;
+    }
+
+    std::pair<int, int> detectSoundBounds (const juce::AudioBuffer<float>& audio, double sampleRate, float thresholdDb)
+    {
+        const int total = audio.getNumSamples();
+        float peak = 0.0f;
+        for (int c = 0; c < audio.getNumChannels(); ++c)
+            peak = juce::jmax (peak, audio.getMagnitude (c, 0, total));
+        if (peak <= 0.0f || total < 64)
+            return { 0, total };
+
+        const float thr = peak * juce::Decibels::decibelsToGain (thresholdDb);
+        auto loud = [&] (int i)
+        {
+            for (int c = 0; c < audio.getNumChannels(); ++c)
+                if (std::abs (audio.getSample (c, i)) > thr) return true;
+            return false;
+        };
+
+        int first = 0, last = total - 1;
+        while (first < total - 1 && ! loud (first)) ++first;
+        while (last > first && ! loud (last)) --last;
+
+        const int preRoll = (int) (sampleRate * 0.002), tail = (int) (sampleRate * 0.015);
+        first = juce::jmax (0, first - preRoll);
+        last = juce::jmin (total, last + tail);
+        if (last - first < 256) return { 0, total };
+        return { first, last };
     }
 
     static float monoSample (const juce::AudioBuffer<float>& a, int i)
@@ -147,7 +176,7 @@ namespace octo
         }
 
         juce::ignoreUnused (sampleRate);
-        sanitise (result, total);
+        sanitise (result, 0, total);
         return result;
     }
 
@@ -180,19 +209,17 @@ namespace octo
         }
     }
 
-    void sanitise (std::vector<int>& points, int totalSamples, int minGap)
+    void sanitise (std::vector<int>& points, int start, int end, int minGap)
     {
-        for (auto& p : points) p = juce::jlimit (0, juce::jmax (0, totalSamples - 1), p);
-        points.push_back (0);
-        std::sort (points.begin(), points.end());
-
-        std::vector<int> out;
+        std::vector<int> in;
         for (int p : points)
-        {
-            if (out.empty()) { out.push_back (0); continue; }
-            if (p - out.back() >= minGap && totalSamples - p >= minGap)
+            if (p > start && p < end) in.push_back (p);
+        std::sort (in.begin(), in.end());
+
+        std::vector<int> out { start };
+        for (int p : in)
+            if (p - out.back() >= minGap && end - p >= minGap)
                 out.push_back (p);
-        }
         if ((int) out.size() > maxSlices)
             out.resize ((size_t) maxSlices);
         points = std::move (out);
